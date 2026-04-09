@@ -135,6 +135,9 @@
       color: #8bc34a;
       font-size: 12px;
     }
+    .device-status.blocked {
+      color: #ff6b6b;
+    }
 
     /* Разделитель */
     .divider {
@@ -180,6 +183,13 @@
     }
 
     .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+
+    /* Индикатор загрузки */
+    .loading {
+      text-align: center;
+      padding: 20px;
+      color: #aaa;
+    }
   </style>
 </head>
 <body class="safe-bottom">
@@ -188,11 +198,11 @@
   <div class="glass-panel">
     <div class="section-label">╱ БАЛАНС</div>
     <div class="balance-row">
-      <span class="balance-amount">1 280 <span class="balance-currency">₽</span></span>
-      <span style="color: #aaa;">ID: 439201</span>
+      <span class="balance-amount" id="balanceDisplay">— <span class="balance-currency">₽</span></span>
+      <span style="color: #aaa;" id="userIdDisplay">ID: ...</span>
     </div>
-    <div style="margin-top: 8px; font-size: 13px; color: #aaa;">
-      Следующее списание: 21.05.2026
+    <div style="margin-top: 8px; font-size: 13px; color: #aaa;" id="expiresDisplay">
+      Загрузка...
     </div>
   </div>
 
@@ -221,24 +231,9 @@
 
   <!-- Устройства -->
   <div class="glass-panel">
-    <div class="section-label">╱ УСТРОЙСТВА (2/5)</div>
+    <div class="section-label" id="devicesCounter">╱ УСТРОЙСТВА (—/—)</div>
     <div id="deviceList">
-      <div class="device-item">
-        <span class="device-icon">📱</span>
-        <div class="device-info">
-          <div class="device-name">iPhone 14 Pro</div>
-          <div class="device-meta">Последняя активность: сейчас</div>
-        </div>
-        <div class="device-status">● активен</div>
-      </div>
-      <div class="device-item">
-        <span class="device-icon">💻</span>
-        <div class="device-info">
-          <div class="device-name">MacBook Pro M2</div>
-          <div class="device-meta">Активен 2 часа назад</div>
-        </div>
-        <div class="device-status">● активен</div>
-      </div>
+      <div class="loading">Загрузка устройств...</div>
     </div>
     <div style="margin-top: 16px;">
       <button class="btn" id="addDeviceBtn">+ Добавить устройство</button>
@@ -260,7 +255,7 @@
   <div class="glass-panel" id="linkPanel" style="display: none;">
     <div class="section-label">╱ РЕФЕРАЛЬНАЯ ССЫЛКА</div>
     <div style="background: rgba(0,0,0,0.2); border-radius: 20px; padding: 16px; margin: 12px 0;">
-      <code id="refLink" style="word-break: break-all; color: #ccc;">https://t.me/VpnBot?start=ref439201</code>
+      <code id="refLink" style="word-break: break-all; color: #ccc;">https://t.me/VpnBot?start=ref...</code>
     </div>
     <div style="display: flex; gap: 12px;">
       <button class="btn" id="copyLinkBtn">📋 Копировать</button>
@@ -269,18 +264,144 @@
     <button class="btn" id="closeLinkBtn" style="margin-top: 12px;">Закрыть</button>
   </div>
 
-  <!-- Главная кнопка Telegram (быстрое пополнение) -->
   <script>
     (function() {
       const tg = window.Telegram.WebApp;
       tg.ready();
       tg.expand();
 
-      // Элементы
+      // ---------- НАСТРОЙКИ ----------
+      const API_BASE_URL = 'https://your-server.com:8000'; // ⚠️ ЗАМЕНИТЕ НА РЕАЛЬНЫЙ АДРЕС СЕРВЕРА
+
+      // Элементы интерфейса
+      const balanceEl = document.getElementById('balanceDisplay');
+      const userIdEl = document.getElementById('userIdDisplay');
+      const expiresEl = document.getElementById('expiresDisplay');
+      const devicesCounterEl = document.getElementById('devicesCounter');
+      const deviceListEl = document.getElementById('deviceList');
       const qrPanel = document.getElementById('qrPanel');
       const linkPanel = document.getElementById('linkPanel');
+      const refLinkEl = document.getElementById('refLink');
 
-      // Обработчики кнопок
+      // ---------- ФУНКЦИЯ ЗАГРУЗКИ ДАННЫХ ИЗ API ----------
+      async function loadAccountData() {
+        try {
+          const initData = tg.initData;
+          if (!initData) {
+            showError('Нет initData. Откройте приложение из Telegram.');
+            return;
+          }
+
+          const response = await fetch(`${API_BASE_URL}/api/account?initData=${encodeURIComponent(initData)}`);
+          if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Ошибка ${response.status}: ${errorText}`);
+          }
+
+          const data = await response.json();
+          updateUI(data);
+        } catch (error) {
+          console.error('Ошибка загрузки данных:', error);
+          showError('Не удалось загрузить данные аккаунта');
+        }
+      }
+
+      function updateUI(data) {
+        // Баланс (в копейках -> рубли)
+        const balanceRub = (data.balance_cents / 100).toFixed(2);
+        balanceEl.innerHTML = `${balanceRub} <span class="balance-currency">₽</span>`;
+
+        // ID пользователя (можно взять из initData или БД)
+        const user = tg.initDataUnsafe?.user;
+        if (user) {
+          userIdEl.textContent = `ID: ${user.id}`;
+        }
+
+        // Подписка
+        if (data.expires_at) {
+          const expiresDate = new Date(data.expires_at);
+          const formatted = expiresDate.toLocaleDateString('ru-RU', {
+            day: '2-digit', month: '2-digit', year: 'numeric'
+          });
+          expiresEl.textContent = `Подписка активна до: ${formatted}`;
+        } else {
+          expiresEl.textContent = 'Нет активной подписки';
+        }
+
+        // Устройства
+        const devices = data.devices || [];
+        const devicesCount = devices.length;
+        const devicesLimit = data.devices_limit || 0;
+        devicesCounterEl.textContent = `╱ УСТРОЙСТВА (${devicesCount}/${devicesLimit})`;
+
+        // Рендер списка устройств
+        if (devicesCount === 0) {
+          deviceListEl.innerHTML = '<div class="loading">Нет подключённых устройств</div>';
+        } else {
+          deviceListEl.innerHTML = '';
+          devices.forEach(device => {
+            const deviceEl = createDeviceElement(device);
+            deviceListEl.appendChild(deviceEl);
+          });
+        }
+
+        // Обновляем реферальную ссылку (если есть в данных)
+        if (data.referral_link) {
+          refLinkEl.textContent = data.referral_link;
+        } else {
+          // Генерируем демо-ссылку на основе ID
+          if (user) {
+            refLinkEl.textContent = `https://t.me/VpnBot?start=ref${user.id}`;
+          }
+        }
+      }
+
+      function createDeviceElement(device) {
+        const div = document.createElement('div');
+        div.className = 'device-item';
+
+        const icon = getDeviceIcon(device.platform);
+        const statusClass = device.is_blocked ? 'blocked' : '';
+        const statusText = device.is_blocked ? '⛔ заблокирован' : '● активен';
+
+        div.innerHTML = `
+          <span class="device-icon">${icon}</span>
+          <div class="device-info">
+            <div class="device-name">${escapeHtml(device.device_name) || 'Без имени'}</div>
+            <div class="device-meta">${escapeHtml(device.platform) || 'unknown'}</div>
+          </div>
+          <div class="device-status ${statusClass}">${statusText}</div>
+        `;
+        return div;
+      }
+
+      function getDeviceIcon(platform) {
+        const icons = {
+          'ios': '📱',
+          'android': '📱',
+          'windows': '💻',
+          'macos': '💻',
+          'linux': '🐧',
+          'other': '📟'
+        };
+        return icons[platform?.toLowerCase()] || '📟';
+      }
+
+      function escapeHtml(text) {
+        if (!text) return '';
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+      }
+
+      function showError(message) {
+        balanceEl.innerHTML = `— <span class="balance-currency">₽</span>`;
+        expiresEl.textContent = 'Ошибка загрузки';
+        deviceListEl.innerHTML = `<div class="loading">${message}</div>`;
+        tg.showPopup({ title: 'Ошибка', message });
+      }
+
+      // ---------- ОБРАБОТЧИКИ ДЕЙСТВИЙ ----------
       document.getElementById('topupBtn').addEventListener('click', () => {
         tg.sendData(JSON.stringify({ action: 'topup_balance' }));
         tg.showPopup({ title: 'Пополнение', message: 'Выберите способ оплаты в боте' });
@@ -289,16 +410,13 @@
 
       document.getElementById('inviteBtn').addEventListener('click', () => {
         tg.sendData(JSON.stringify({ action: 'invite_friend' }));
-        // Показываем панель со ссылкой (можно и сразу открыть)
         linkPanel.style.display = 'block';
         tg.HapticFeedback?.impactOccurred('light');
       });
 
       document.getElementById('createLinkBtn').addEventListener('click', () => {
-        // Генерируем демо-ссылку
-        document.getElementById('refLink').innerText = `https://t.me/VpnBot?start=ref${Math.floor(Math.random()*1000000)}`;
-        linkPanel.style.display = 'block';
         tg.sendData(JSON.stringify({ action: 'create_referral_link' }));
+        linkPanel.style.display = 'block';
         tg.HapticFeedback?.impactOccurred('light');
       });
 
@@ -316,9 +434,8 @@
         linkPanel.style.display = 'none';
       });
 
-      // Копирование ссылки
       document.getElementById('copyLinkBtn').addEventListener('click', () => {
-        const link = document.getElementById('refLink').innerText;
+        const link = refLinkEl.textContent;
         navigator.clipboard?.writeText(link).then(() => {
           tg.showPopup({ title: 'Готово', message: 'Ссылка скопирована' });
           tg.HapticFeedback?.notificationOccurred('success');
@@ -327,33 +444,27 @@
         });
       });
 
-      // Поделиться ссылкой через Telegram
       document.getElementById('shareLinkBtn').addEventListener('click', () => {
-        const link = document.getElementById('refLink').innerText;
+        const link = refLinkEl.textContent;
         tg.sendData(JSON.stringify({ action: 'share_link', url: link }));
         tg.showPopup({ title: 'Поделиться', message: 'Отправьте ссылку другу' });
       });
 
-      // Добавить устройство
       document.getElementById('addDeviceBtn').addEventListener('click', () => {
         tg.sendData(JSON.stringify({ action: 'add_device' }));
         tg.showPopup({ title: 'Новое устройство', message: 'Следуйте инструкциям бота для добавления' });
         tg.HapticFeedback?.impactOccurred('medium');
       });
 
-      // Главная кнопка Telegram – быстрое пополнение
+      // Главная кнопка Telegram
       tg.MainButton.setText('💳 Пополнить баланс').show();
       tg.MainButton.onClick(() => {
         tg.sendData(JSON.stringify({ action: 'quick_topup' }));
         tg.close();
       });
 
-      // Приветствие (имя пользователя, если доступно)
-      const user = tg.initDataUnsafe?.user;
-      if (user) {
-        console.log(`Добро пожаловать, ${user.first_name}`);
-        // Можно добавить приветствие в интерфейс (опционально)
-      }
+      // ---------- ЗАПУСК ----------
+      loadAccountData();
     })();
   </script>
 </body>
